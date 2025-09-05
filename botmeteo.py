@@ -12,7 +12,8 @@ CHANNEL_ID = 1412736489892352093                 # <- remplace par l'ID réel du
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone="Europe/Paris")
+
 
 async def get_meteo():
     if not API_KEY:

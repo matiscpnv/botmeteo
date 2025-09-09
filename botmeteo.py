@@ -9,28 +9,14 @@ from aiohttp import web  # mini serveur HTTP pour Render
 # --- Config ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
-VILLE = os.getenv("VILLE", "Sainte-Croix")  # récupère depuis Render si défini
+VILLE = os.getenv("VILLE", "Sainte-Croix")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 scheduler = AsyncIOScheduler(timezone="Europe/Paris")
 
-# --- Mini serveur HTTP (Render health check) ---
-async def _health(request):
-    return web.Response(text="botmeteo OK")
-
-async def start_web():
-    app = web.Application()
-    app.router.add_get("/", _health)
-    port = int(os.getenv("PORT", "10000"))  # Render fournit automatiquement PORT
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌍 Serveur web lancé sur le port {port}")
-
-# --- Fonction météo ---
+# ------------- METEO -------------
 async def get_meteo():
     if not API_KEY:
         return "❌ Erreur : OPENWEATHER_API_KEY manquante."
@@ -48,13 +34,13 @@ async def get_meteo():
     temp = data["main"]["temp"]
     meteo = data["weather"][0]["description"]
 
-    # --- CONSEILS D'HABILLAGE ---
+    # Conseils d'habillage
     if "pluie" in meteo:
         emoji, conseil = "🌧️", "Prends un imperméable et un parapluie ☔."
     elif "averse" in meteo or "bruine" in meteo:
         emoji, conseil = "🌦️", "Un K-way ou une capuche suffira."
     elif "neige" in meteo:
-        emoji, conseil = "❄️", "Mets un manteau chaud, bonnet, gants et écharpe 🧤🧣."
+        emoji, conseil = "❄️", "Manteau chaud, bonnet, gants et écharpe 🧤🧣."
     elif "verglas" in meteo:
         emoji, conseil = "🧊", "Chaussures à bonne adhérence et tenue chaude."
     elif "nuageux" in meteo or "couvert" in meteo:
@@ -79,29 +65,54 @@ async def get_meteo():
         f"👕 {conseil}"
     )
 
-# --- Discord bot ---
-web_started = False
+async def send_meteo():
+    """Envoie la météo dans le salon Discord configuré."""
+    if CHANNEL_ID == 0:
+        print("CHANNEL_ID non configuré.")
+        return
+    try:
+        channel = await client.fetch_channel(CHANNEL_ID)
+        await channel.send(await get_meteo())
+    except Exception as e:
+        print(f"Erreur envoi météo: {e}")
+
+# ------------- Mini serveur HTTP (Render) -------------
+async def http_health(request):
+    return web.Response(text="botmeteo OK")
+
+async def http_meteo(request):
+    # Déclenche l’envoi dans Discord ET retourne le texte dans le navigateur
+    text = await get_meteo()
+    # envoi Discord en tâche séparée pour ne pas bloquer la réponse HTTP
+    asyncio.create_task(send_meteo())
+    return web.Response(text=text)
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", http_health)
+    app.router.add_get("/meteo", http_meteo)  # endpoint déclencheur
+    port = int(os.getenv("PORT", "10000"))  # Render fournit PORT
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌍 Serveur web lancé sur le port {port}")
+
+# ------------- Discord bot -------------
+_web_started = False
 
 @client.event
 async def on_ready():
-    global web_started
+    global _web_started
     print(f"✅ Connecté en tant que {client.user} (ID: {client.user.id})")
 
     # Démarre le serveur web pour Render
-    if not web_started:
+    if not _web_started:
         asyncio.create_task(start_web())
-        web_started = True
+        _web_started = True
 
-    async def envoyer_meteo():
-        try:
-            if CHANNEL_ID != 0:
-                channel = await client.fetch_channel(CHANNEL_ID)
-                await channel.send(await get_meteo())
-        except Exception as e:
-            print(f"Erreur envoi météo: {e}")
-
-    # Envoi quotidien à 6h40 heure Paris
-    scheduler.add_job(envoyer_meteo, "cron", hour=6, minute=40)
+    # Programmation quotidienne à 06:40 Europe/Paris
+    scheduler.add_job(send_meteo, "cron", hour=6, minute=40)
     scheduler.start()
 
 if __name__ == "__main__":
